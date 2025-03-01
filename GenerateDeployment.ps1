@@ -19,38 +19,6 @@ function Test-ValidDirectory {
     return $true
 }
 
-# Function to create shortcut
-function New-Shortcut {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$TargetPath,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$ShortcutPath,
-        
-        [Parameter(Mandatory = $false)]
-        [string]$Arguments = "",
-        
-        [Parameter(Mandatory = $false)]
-        [string]$Description = ""
-    )
-    
-    try {
-        $WshShell = New-Object -ComObject WScript.Shell
-        $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
-        $Shortcut.TargetPath = $TargetPath
-        $Shortcut.Arguments = $Arguments
-        $Shortcut.Description = $Description
-        $Shortcut.WorkingDirectory = Split-Path -Path $TargetPath -Parent
-        $Shortcut.Save()
-        Write-Output "Created shortcut: $ShortcutPath"
-        return $true
-    } catch {
-        Write-Error "Failed to create shortcut: $_"
-        return $false
-    }
-}
-
 # Define paths
 $currentDir = $PSScriptRoot
 $dependenciesFilePath = Join-Path -Path $currentDir -ChildPath "FancyZonesDependencies.txt"
@@ -165,66 +133,102 @@ if (Test-Path -Path $scriptPath -PathType Leaf) {
 Write-Output "Source files deployment completed successfully to: $deploymentSrcDir"
 
 # Create restart script in the src directory
-$restartScriptContent = @"
+$restartScriptContent = @'
 # PowerToys.FancyZones Restart Script
-Get-Process | Where-Object { `$_.ProcessName -eq "PowerToys.FancyZones" } | Stop-Process -Force
-Start-Process "`$PSScriptRoot\PowerToys.FancyZones.exe"
-"@
+Write-Host "Stopping any running FancyZones processes..." -ForegroundColor Cyan
+Get-Process | Where-Object { $_.ProcessName -eq "PowerToys.FancyZones" } | Stop-Process -Force
+
+Write-Host "Starting FancyZones..." -ForegroundColor Cyan
+Start-Process "$PSScriptRoot\PowerToys.FancyZones.exe"
+Write-Host "FancyZones started successfully." -ForegroundColor Green
+'@
 
 $restartScriptPath = Join-Path -Path $deploymentSrcDir -ChildPath "Restart-FancyZones.ps1"
 $restartScriptContent | Out-File -FilePath $restartScriptPath -Encoding UTF8
 Write-Output "Created restart script: $restartScriptPath"
 
 # Create stop script in the src directory
-$stopScriptContent = @"
+$stopScriptContent = @'
 # PowerToys.FancyZones Stop Script
-Get-Process | Where-Object { `$_.ProcessName -eq "PowerToys.FancyZones" } | Stop-Process -Force
-"@
+Write-Host "Stopping any running FancyZones processes..." -ForegroundColor Cyan
+Get-Process | Where-Object { $_.ProcessName -eq "PowerToys.FancyZones" } | Stop-Process -Force
+Write-Host "FancyZones stopped successfully." -ForegroundColor Green
+'@
+
 $stopScriptPath = Join-Path -Path $deploymentSrcDir -ChildPath "Stop-FancyZones.ps1"
 $stopScriptContent | Out-File -FilePath $stopScriptPath -Encoding UTF8
 Write-Output "Created stop script: $stopScriptPath"
 
-# Create shortcuts in the deployment directory
-# 1. Main executable shortcuts
-foreach ($exe in $fancyZonesExes) {
-    $exePath = Join-Path -Path $deploymentSrcDir -ChildPath $exe
-    $shortcutPath = Join-Path -Path $deploymentDir -ChildPath "$exe.lnk"
-    $powerShellPath = (Get-Command powershell).Source
-    
-    if (Test-Path -Path $exePath -PathType Leaf) {
-        if ($exe -eq "PowerToys.FancyZones.exe") {
-            # Direct shortcut for FancyZones.exe
-            $description = "Run $exe"
-            New-Shortcut -TargetPath $exePath -ShortcutPath $shortcutPath -Description $description
-        } else {
-            # For FancyZonesEditor.exe, create a shortcut that runs the editor and then restarts FancyZones
-            $description = "Run $exe and restart FancyZones"
-            $arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"& {Start-Process -FilePath '$exePath' -Wait; & '$restartScriptPath'}`""
-            New-Shortcut -TargetPath $powerShellPath -ShortcutPath $shortcutPath -Arguments $arguments -Description $description
-        }
-    } else {
-        Write-Error "Cannot create shortcut: Target file not found: $exePath"
-    }
-}
+# Create wrapper scripts in the deployment directory
+# 1. Script to run FancyZones.exe
+$runFancyZonesContent = @'
+# Run FancyZones
+$scriptPath = $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent -Path $scriptPath
+$exePath = Join-Path -Path $scriptDir -ChildPath "src\PowerToys.FancyZones.exe"
 
-# Create shortcut for RefreshConfiguration.ps1
-$refreshScriptPath = Join-Path -Path $deploymentSrcDir -ChildPath "RefreshConfiguration.ps1"
-$refreshShortcutPath = Join-Path -Path $deploymentDir -ChildPath "RefreshConfiguration.lnk"
-$refreshDescription = "Refresh FancyZones configuration and restart"
-$refreshArguments = "-NoProfile -ExecutionPolicy Bypass -Command `"& {& '$refreshScriptPath'; & '$restartScriptPath'}`""
-New-Shortcut -TargetPath $powerShellPath -ShortcutPath $refreshShortcutPath -Arguments $refreshArguments -Description $refreshDescription
-Write-Output "Created refresh configuration shortcut: $refreshShortcutPath"
+Write-Host "Starting FancyZones from: $exePath" -ForegroundColor Cyan
+Start-Process -FilePath $exePath
+Write-Host "FancyZones started successfully." -ForegroundColor Green
+'@
 
-# 2. Restart FancyZones shortcut
-$powerShellPath = (Get-Command powershell).Source
-$restartShortcutPath = Join-Path -Path $deploymentDir -ChildPath "Restart-FancyZones.lnk"
-$restartArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$restartScriptPath`""
-New-Shortcut -TargetPath $powerShellPath -ShortcutPath $restartShortcutPath -Arguments $restartArguments -Description "Restart FancyZones"
+$runFancyZonesPath = Join-Path -Path $deploymentDir -ChildPath "Run-FancyZones.ps1"
+$runFancyZonesContent | Out-File -FilePath $runFancyZonesPath -Encoding UTF8
+Write-Output "Created Run-FancyZones script: $runFancyZonesPath"
 
-# 3. Stop FancyZones shortcut
-$stopShortcutPath = Join-Path -Path $deploymentDir -ChildPath "Stop-FancyZones.lnk"
-$stopArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$stopScriptPath`""
-New-Shortcut -TargetPath $powerShellPath -ShortcutPath $stopShortcutPath -Arguments $stopArguments -Description "Stop FancyZones"
+# 2. Script to run FancyZonesEditor.exe and restart FancyZones
+$runEditorContent = @'
+# Run FancyZones Editor and restart FancyZones
+$scriptPath = $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent -Path $scriptPath
+$editorPath = Join-Path -Path $scriptDir -ChildPath "src\PowerToys.FancyZonesEditor.exe"
+$restartPath = Join-Path -Path $scriptDir -ChildPath "src\Restart-FancyZones.ps1"
 
-Write-Output "Shortcuts created in: $deploymentDir"
+Write-Host "Starting FancyZones Editor from: $editorPath" -ForegroundColor Cyan
+Start-Process -FilePath $editorPath -Wait
+Write-Host "FancyZones Editor closed. Restarting FancyZones..." -ForegroundColor Cyan
+
+# Restart FancyZones after editor is closed
+& $restartPath
+'@
+
+$runEditorPath = Join-Path -Path $deploymentDir -ChildPath "Run-FancyZonesEditor.ps1"
+$runEditorContent | Out-File -FilePath $runEditorPath -Encoding UTF8
+Write-Output "Created Run-FancyZonesEditor script: $runEditorPath"
+
+# 3. Script to refresh configuration and restart FancyZones
+$refreshConfigContent = @'
+# Refresh FancyZones configuration and restart
+$scriptPath = $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent -Path $scriptPath
+$refreshPath = Join-Path -Path $scriptDir -ChildPath "src\RefreshConfiguration.ps1"
+$restartPath = Join-Path -Path $scriptDir -ChildPath "src\Restart-FancyZones.ps1"
+
+Write-Host "Refreshing FancyZones configuration..." -ForegroundColor Cyan
+& $refreshPath
+
+Write-Host "Configuration refreshed. Restarting FancyZones..." -ForegroundColor Cyan
+& $restartPath
+'@
+
+$refreshConfigPath = Join-Path -Path $deploymentDir -ChildPath "Refresh-FancyZonesConfig.ps1"
+$refreshConfigContent | Out-File -FilePath $refreshConfigPath -Encoding UTF8
+Write-Output "Created Refresh-FancyZonesConfig script: $refreshConfigPath"
+
+# 4. Script to stop FancyZones
+$stopFancyZonesContent = @'
+# Stop FancyZones
+$scriptPath = $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent -Path $scriptPath
+$stopPath = Join-Path -Path $scriptDir -ChildPath "src\Stop-FancyZones.ps1"
+
+Write-Host "Stopping FancyZones..." -ForegroundColor Cyan
+& $stopPath
+'@
+
+$stopFancyZonesPath = Join-Path -Path $deploymentDir -ChildPath "Stop-FancyZones.ps1"
+$stopFancyZonesContent | Out-File -FilePath $stopFancyZonesPath -Encoding UTF8
+Write-Output "Created Stop-FancyZones script: $stopFancyZonesPath"
+
+Write-Output "Wrapper scripts created in: $deploymentDir"
 Write-Output "Deployment completed successfully!"
