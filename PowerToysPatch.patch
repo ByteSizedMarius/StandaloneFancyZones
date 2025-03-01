@@ -1,0 +1,402 @@
+diff --git a/src/modules/fancyzones/FancyZones/main.cpp b/src/modules/fancyzones/FancyZones/main.cpp
+index 4001673ea..5eabb3d18 100644
+--- a/src/modules/fancyzones/FancyZones/main.cpp
++++ b/src/modules/fancyzones/FancyZones/main.cpp
+@@ -1,29 +1,330 @@
+ ﻿#include "pch.h"
+ 
++#include <vector>
++#include <string>
++#include <optional>
++#include <shellapi.h>
++#include <windows.h>
++#include <FancyZonesApp.h>
++
+ #include <common/utils/ProcessWaiter.h>
+ #include <common/utils/window.h>
+ #include <common/utils/UnhandledExceptionHandler.h>
+ #include <common/utils/gpo.h>
+-
+-#include <FancyZonesLib/trace.h>
+-#include <FancyZonesLib/Generated Files/resource.h>
+-
+ #include <common/utils/logger_helper.h>
+ #include <common/hooks/LowlevelKeyboardEvent.h>
+ #include <common/utils/resources.h>
+-
++#include <common/Display/dpi_aware.h>
+ #include <common/Telemetry/EtwTrace/EtwTrace.h>
+ 
+ #include <FancyZonesLib/FancyZones.h>
+ #include <FancyZonesLib/FancyZonesWinHookEventIDs.h>
+ #include <FancyZonesLib/ModuleConstants.h>
+-
+-#include <FancyZonesApp.h>
++#include <FancyZonesLib/FancyZonesData/AppliedLayouts.h>
++#include <FancyZonesLib/EditorParameters.h>
++#include <FancyZonesLib/WorkAreaConfiguration.h>
++#include <FancyZonesLib/on_thread_executor.h>
++#include <FancyZonesLib/Settings.h>
++#include <FancyZonesLib/MonitorUtils.h>
++#include <FancyZonesLib/VirtualDesktop.h>
++#include <FancyZonesLib/WorkArea.h>
++#include <FancyZonesLib/trace.h>
++#include <FancyZonesLib/Generated Files/resource.h>
+ 
+ // Non-localizable
+ const std::wstring moduleName = L"FancyZones";
+ const std::wstring internalPath = L"";
+ const std::wstring instanceMutexName = L"Local\\PowerToys_FancyZones_InstanceMutex";
++const std::wstring genParamsFlag = L"--generate-editor-params";
++
++// Callback for EnumDisplayMonitors
++BOOL CALLBACK SaveMonitorToVector(HMONITOR monitor, HDC /*hdc*/, LPRECT /*rect*/, LPARAM data)
++{
++    reinterpret_cast<std::vector<HMONITOR>*>(data)->emplace_back(monitor);
++    return TRUE;
++}
++
++void GenerateEditorParameters()
++{
++    Logger::info(L"Generating editor-parameters.json file");
++
++    // Load current FancyZones settings
++    FancyZonesSettings::instance().LoadSettings();
++
++    // Create a new WorkAreaConfiguration
++    WorkAreaConfiguration configuration;
++
++    // Create on thread executor for DPI-unaware operations
++    OnThreadExecutor dpiUnawareThread;
++
++    // Get all monitors
++    std::vector<HMONITOR> monitors;
++    if (!EnumDisplayMonitors(NULL, NULL, SaveMonitorToVector, reinterpret_cast<LPARAM>(&monitors)))
++    {
++        Logger::error(L"Failed to enumerate display monitors");
++        return;
++    }
++
++    Logger::info(L"Found {} monitors", monitors.size());
++
++    // Get virtual desktop ID
++    std::optional<GUID> virtualDesktopId = VirtualDesktop::instance().GetCurrentVirtualDesktopIdFromRegistry();
++    if (!virtualDesktopId.has_value())
++    {
++        // Use the default GUID if current desktop ID can't be retrieved
++        virtualDesktopId = GUID_NULL;
++        Logger::warn(L"Could not retrieve current virtual desktop ID, using default GUID_NULL");
++    }
++    else
++    {
++        // Format GUID as string for logging
++        OLECHAR guidString[40] = { 0 };
++        StringFromGUID2(virtualDesktopId.value(), guidString, ARRAYSIZE(guidString));
++        Logger::info(L"Virtual Desktop ID: {}", guidString);
++    }
++
++    // Get current cursor position to determine the active monitor
++    POINT currentCursorPos{};
++    if (GetCursorPos(&currentCursorPos))
++    {
++        Logger::info(L"Current cursor position: ({}, {})", currentCursorPos.x, currentCursorPos.y);
++    }
++    else
++    {
++        Logger::warn(L"Failed to get cursor position: error {}", GetLastError());
++    }
++
++    HMONITOR activeMonitor = MonitorFromPoint(currentCursorPos, MONITOR_DEFAULTTOPRIMARY);
++
++    // Get display and WMI monitor info using the existing MonitorUtils implementations
++    auto displaysResult = MonitorUtils::Display::GetDisplays();
++    auto displays = displaysResult.second; // This already has monitor handles associated
++    auto wmiResult = MonitorUtils::WMI::GetHardwareMonitorIds();
++
++    Logger::info(L"Display detection result: {}", displaysResult.first ? L"Success" : L"Partial failure");
++    Logger::info(L"Found {} display entries", displays.size());
++
++    // Log display information
++    for (const auto& display : displays)
++    {
++        Logger::info(L"Display entry - Monitor handle: {}", reinterpret_cast<uint64_t>(display.monitor));
++        Logger::info(L"  Device ID: {}", display.deviceId.id);
++        Logger::info(L"  Instance ID: {}", display.deviceId.instanceId);
++        Logger::info(L"  Number: {}", display.deviceId.number);
++        Logger::info(L"  Serial Number: {}", display.serialNumber);
++    }
++
++    Logger::info(L"WMI Info Result: {} entries", wmiResult.size());
++    for (const auto& wmiInfo : wmiResult)
++    {
++        Logger::info(L"WMI Info - Device ID: {}", wmiInfo.deviceId.id);
++        Logger::info(L"WMI Info - Instance ID: {}", wmiInfo.deviceId.instanceId);
++        Logger::info(L"WMI Info - Serial Number: {}", wmiInfo.serialNumber);
++    }
++
++    // First pass: find out which monitor handles from our enumeration match with
++    // the monitor handles already in the display results
++    std::map<HMONITOR, FancyZonesDataTypes::MonitorId> monitorToInfoMap;
++
++    Logger::info(L"Creating monitor handle to info mapping:");
++    for (const auto& display : displays)
++    {
++        if (display.monitor)
++        {
++            monitorToInfoMap[display.monitor] = display;
++            Logger::info(L"  Added mapping for monitor handle {}: Device ID {}",
++                         reinterpret_cast<uint64_t>(display.monitor),
++                         display.deviceId.id);
++        }
++    }
++
++    // Now process our monitors, using the existing display data
++    for (const auto& monitor : monitors)
++    {
++        MONITORINFOEX monitorInfo{};
++        monitorInfo.cbSize = sizeof(monitorInfo);
++        if (GetMonitorInfo(monitor, &monitorInfo))
++        {
++            Logger::info(L"Processing monitor with device: {}", monitorInfo.szDevice);
++            Logger::info(L"  Work area: Left={}, Top={}, Right={}, Bottom={}",
++                         monitorInfo.rcWork.left,
++                         monitorInfo.rcWork.top,
++                         monitorInfo.rcWork.right,
++                         monitorInfo.rcWork.bottom);
++
++            // Try to find this monitor in our mapping
++            FancyZonesDataTypes::MonitorId monitorId{};
++            bool foundMonitorInfo = false;
++
++            // 1. First try direct monitor handle comparison
++            if (monitorToInfoMap.find(monitor) != monitorToInfoMap.end())
++            {
++                monitorId = monitorToInfoMap[monitor];
++                foundMonitorInfo = true;
++                Logger::info(L"  Found monitor info by handle");
++            }
++
++            // 2. Try to match by device name
++            if (!foundMonitorInfo)
++            {
++                std::wstring adapterName = monitorInfo.szDevice; // This will be like \\.\DISPLAY1
++
++                // A. Try to find a display with this exact device name
++                for (const auto& display : displays)
++                {
++                    if (display.deviceId.id == adapterName)
++                    {
++                        monitorId = display;
++                        foundMonitorInfo = true;
++                        Logger::info(L"  Found monitor info by adapter name");
++                        break;
++                    }
++                }
++
++                // B. Try to extract display number for matching
++                if (!foundMonitorInfo)
++                {
++                    // Extract number from \\.\DISPLAY1
++                    int displayNumber = 0;
++                    try
++                    {
++                        std::wstring numberStr = adapterName;
++                        // Find position of "DISPLAY" and extract the number after it
++                        size_t pos = numberStr.find(L"DISPLAY");
++                        if (pos != std::wstring::npos)
++                        {
++                            numberStr = numberStr.substr(pos + 7); // Skip "DISPLAY"
++                            displayNumber = std::stoi(numberStr);
++
++                            // Try to find a display with this number
++                            for (const auto& display : displays)
++                            {
++                                if (display.deviceId.number == displayNumber)
++                                {
++                                    monitorId = display;
++                                    foundMonitorInfo = true;
++                                    Logger::info(L"  Found monitor info by display number {}", displayNumber);
++                                    break;
++                                }
++                            }
++                        }
++                    }
++                    catch (...)
++                    {
++                        Logger::warn(L"  Failed to extract display number from {}", adapterName);
++                    }
++                }
++            }
++
++            // If still no match, create basic monitor info
++            if (!foundMonitorInfo)
++            {
++                monitorId.deviceId.id = monitorInfo.szDevice;
++
++                // Try to extract display number
++                try
++                {
++                    std::wstring numberStr = monitorInfo.szDevice; // \\.\DISPLAY1
++                    size_t pos = numberStr.find(L"DISPLAY");
++                    if (pos != std::wstring::npos)
++                    {
++                        numberStr = numberStr.substr(pos + 7); // Skip "DISPLAY"
++                        monitorId.deviceId.number = std::stoi(numberStr);
++                    }
++                    else
++                    {
++                        monitorId.deviceId.number = 0;
++                    }
++                }
++                catch (...)
++                {
++                    Logger::error(L"  Failed to get display number from {}", monitorInfo.szDevice);
++                    monitorId.deviceId.number = 0;
++                }
++
++                Logger::warn(L"  No matching display info found. Using adapter name: {}", monitorId.deviceId.id);
++            }
++
++            // If needed, merge WMI info (serial number)
++            if (monitorId.serialNumber.empty())
++            {
++                for (const auto& wmiInfo : wmiResult)
++                {
++                    // Match by device ID
++                    if (wmiInfo.deviceId.id == monitorId.deviceId.id)
++                    {
++                        monitorId.serialNumber = wmiInfo.serialNumber;
++                        Logger::info(L"  Added serial number {} from WMI info", wmiInfo.serialNumber);
++                        break;
++                    }
++                }
++            }
++
++            // Log final monitor information
++            Logger::info(L"Final Monitor Information:");
++            Logger::info(L"  Monitor ID: {}", monitorId.deviceId.id);
++            Logger::info(L"  Monitor Instance ID: {}", monitorId.deviceId.instanceId);
++            Logger::info(L"  Monitor Number: {}", monitorId.deviceId.number);
++            Logger::info(L"  Monitor Serial Number: {}", monitorId.serialNumber);
++
++            // Create work area ID
++            FancyZonesDataTypes::WorkAreaId workAreaId{
++                .monitorId = monitorId,
++                .virtualDesktopId = virtualDesktopId.value()
++            };
++
++            OLECHAR guidString[40] = { 0 };
++            StringFromGUID2(workAreaId.virtualDesktopId, guidString, ARRAYSIZE(guidString));
++            Logger::info(L"Work Area ID created with Virtual Desktop ID: {}", guidString);
++
++            // Create a work area rect
++            RECT rect;
++            rect.left = monitorInfo.rcWork.left;
++            rect.top = monitorInfo.rcWork.top;
++            rect.right = monitorInfo.rcWork.right;
++            rect.bottom = monitorInfo.rcWork.bottom;
++
++            FancyZonesUtils::Rect workAreaRect(rect);
++            Logger::info(L"Work Area Rect: Left={}, Top={}, Right={}, Bottom={}",
++                         workAreaRect.left(),
++                         workAreaRect.top(),
++                         workAreaRect.right(),
++                         workAreaRect.bottom());
++
++            HINSTANCE hinstance = GetModuleHandle(NULL);
++            FancyZonesDataTypes::WorkAreaId parentWorkAreaId;
++
++            Logger::info(L"Creating work area for monitor...");
++            auto workArea = WorkArea::Create(hinstance, workAreaId, parentWorkAreaId, workAreaRect);
++
++            if (workArea)
++            {
++                Logger::info(L"Work area created successfully");
++                configuration.AddWorkArea(monitor, std::move(workArea));
++                Logger::info(L"Work area added to configuration");
++            }
++            else
++            {
++                Logger::error(L"Failed to create work area for monitor: {}", monitorInfo.szDevice);
++            }
++        }
++        else
++        {
++            Logger::error(L"Failed to get monitor info: error {}", GetLastError());
++        }
++    }
++
++    Logger::info(L"Attempting to save editor parameters...");
++    bool success = EditorParameters::Save(configuration, dpiUnawareThread);
++    if (success)
++    {
++        Logger::info(L"Editor parameters file generated successfully");
++    }
++    else
++    {
++        Logger::error(L"Failed to generate editor parameters file");
++    }
++}
+ 
+ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ PWSTR lpCmdLine, _In_ int nCmdShow)
+ {
+@@ -53,6 +354,36 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
+         return 0;
+     }
+ 
++    // Parse command line arguments
++    int argc = 0;
++    LPWSTR* argv = CommandLineToArgvW(lpCmdLine, &argc);
++    if (argv == nullptr)
++    {
++        Logger::error(L"Failed to parse command line arguments. Error: {}", GetLastError());
++        return 1;
++    }
++
++    // Check if we should generate editor parameters and exit
++    bool generateParamsMode = false;
++    for (int i = 0; i < argc; i++)
++    {
++        if (wcscmp(argv[i], genParamsFlag.c_str()) == 0)
++        {
++            generateParamsMode = true;
++            break;
++        }
++    }
++    LocalFree(argv);
++
++    if (generateParamsMode)
++    {
++        Logger::info(L"Running in editor parameters generation mode");
++        // Generate editor parameters and exit
++        GenerateEditorParameters();
++        return 0;
++    }
++
++    // Continue with normal execution
+     auto process = GetCurrentProcess();
+     if (!SetPriorityClass(process, NORMAL_PRIORITY_CLASS))
+     {
+diff --git a/src/modules/fancyzones/FancyZonesLib/util.h b/src/modules/fancyzones/FancyZonesLib/util.h
+index ffcbb9fa7..e242ca448 100644
+--- a/src/modules/fancyzones/FancyZonesLib/util.h
++++ b/src/modules/fancyzones/FancyZonesLib/util.h
+@@ -53,7 +53,9 @@ namespace FancyZonesUtils
+         quad->rgbBlue = GetBValue(color) * alpha / 255;
+     }
+ 
+-    inline void FillRectARGB(wil::unique_hdc& hdc, RECT const* prcFill, BYTE alpha, COLORREF color, bool /*blendAlpha*/)
++    /*
++    * causing random issues
++    inline void FillRectARGB(wil::unique_hdc& hdc, RECT const* prcFill, BYTE alpha, COLORREF color, bool)
+     {
+         BITMAPINFO bi;
+         ZeroMemory(&bi, sizeof(bi));
+@@ -84,6 +86,7 @@ namespace FancyZonesUtils
+             DIB_RGB_COLORS,
+             SRCCOPY);
+     }
++    */
+ 
+     inline COLORREF HexToRGB(std::wstring_view hex, const COLORREF fallbackColor = RGB(255, 255, 255))
+     {
