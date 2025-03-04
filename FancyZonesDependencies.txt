@@ -1,3 +1,4 @@
+Accessibility.dll
 clrjit.dll
 ControlzEx.dll
 coreclr.dll
@@ -5,13 +6,16 @@ D3DCompiler_47_cor3.dll
 DirectWriteForwarder.dll
 hostfxr.dll
 hostpolicy.dll
+Microsoft.DiaSymReader.Native.amd64.dll
 Microsoft.Win32.Primitives.dll
 Microsoft.Win32.Registry.dll
 Microsoft.Win32.SystemEvents.dll
 Microsoft.Windows.SDK.NET.dll
 ModernWpf.Controls.dll
 ModernWpf.dll
+mscorrc.dll
 msvcp140.dll
+PenImc_cor3.dll
 PowerToys.Common.UI.dll
 PowerToys.FancyZones.exe
 PowerToys.FancyZones.pdb
@@ -19,8 +23,10 @@ PowerToys.FancyZonesEditor.deps.json
 PowerToys.FancyZonesEditor.dll
 PowerToys.FancyZonesEditor.dll.config
 PowerToys.FancyZonesEditor.exe
+PowerToys.FancyZonesEditor.pdb
 PowerToys.FancyZonesEditor.runtimeconfig.json
 PowerToys.FancyZonesEditorCommon.dll
+PowerToys.FancyZonesEditorCommon.pdb
 PowerToys.GPOWrapper.dll
 PowerToys.GPOWrapperProjection.dll
 PowerToys.Interop.dll
@@ -34,6 +40,7 @@ PresentationFramework-SystemXml.dll
 PresentationNative_cor3.dll
 System.Collections.Concurrent.dll
 System.Collections.dll
+System.Collections.Immutable.dll
 System.Collections.NonGeneric.dll
 System.Collections.Specialized.dll
 System.ComponentModel.dll
@@ -67,6 +74,7 @@ System.Private.Uri.dll
 System.Private.Xml.dll
 System.Reflection.Emit.ILGeneration.dll
 System.Reflection.Emit.Lightweight.dll
+System.Reflection.Metadata.dll
 System.Reflection.Primitives.dll
 System.Runtime.CompilerServices.VisualC.dll
 System.Runtime.dll
@@ -84,6 +92,7 @@ System.Threading.Thread.dll
 System.Threading.ThreadPool.dll
 System.Windows.Controls.Ribbon.dll
 System.Windows.Extensions.dll
+System.Windows.Presentation.dll
 System.Xaml.dll
 System.Xml.ReaderWriter.dll
 TestableIO.System.IO.Abstractions.dll
